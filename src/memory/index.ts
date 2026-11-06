@@ -15,7 +15,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/server";
 import type { Transport } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { promises as fs, realpathSync } from "fs";
+import { promises as fs, realpathSync, readFileSync, unlinkSync } from "fs";
 import type { FileHandle } from "fs/promises";
 import path from "path";
 import os from "os";
@@ -276,6 +276,25 @@ async function breakStaleLock(
   }
 }
 
+// Active lock files held by this process. Tracked so process exit or termination
+// signals clean them up synchronously instead of leaving abandoned locks behind.
+export const activeLocks = new Map<string, string>();
+
+export function cleanupActiveLocks(): void {
+  for (const [lockPath, token] of activeLocks) {
+    try {
+      if (readFileSync(lockPath, "utf-8") === token) {
+        unlinkSync(lockPath);
+      }
+    } catch {
+      // Ignored: best-effort cleanup on exit
+    }
+  }
+  activeLocks.clear();
+}
+
+process.on("exit", cleanupActiveLocks);
+
 // Run operation while holding an exclusive lock file at lockPath, so that
 // mutations from separate server processes sharing one graph file take turns
 // and each one loads the graph the previous one saved (#4797). The lock is a
@@ -308,6 +327,7 @@ export async function withFileLock<T>(
       try {
         await handle.writeFile(token);
         await handle.close();
+        activeLocks.set(lockPath, token);
       } catch (error) {
         // The lock was created but not written: remove it rather than leave
         // every other writer waiting for it to go stale.
@@ -359,6 +379,7 @@ export async function withFileLock<T>(
   try {
     return await operation();
   } finally {
+    activeLocks.delete(lockPath);
     clearInterval(heartbeat);
     // Release only our own lock: if it was broken as stale while we held it,
     // the file may now belong to another process.
@@ -1413,6 +1434,17 @@ export async function main(transport?: Transport): Promise<StdioServerHandle> {
       process.exitCode = 1;
     },
   });
+
+  if (!transport) {
+    const shutdown = async () => {
+      cleanupActiveLocks();
+      await handle.close();
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  }
+
   console.error("Knowledge Graph MCP Server running on stdio");
   return handle;
 }
