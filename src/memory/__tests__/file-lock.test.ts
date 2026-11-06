@@ -6,7 +6,12 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { spawnSync } from "child_process";
-import { KnowledgeGraphManager, withFileLock } from "../index.js";
+import {
+  KnowledgeGraphManager,
+  withFileLock,
+  activeLocks,
+  cleanupActiveLocks,
+} from "../index.js";
 import { makeTempGraph } from "./helpers.js";
 
 const fast = { staleMs: 60_000, timeoutMs: 100, retryMs: 5 };
@@ -353,5 +358,27 @@ describe("withFileLock", () => {
     const graph = await managers[0].readGraph();
     expect(graph.entities.map((e) => e.name).sort()).toEqual([...names].sort());
     expect(await fs.readdir(dir)).toEqual(["memory.jsonl"]);
+  });
+
+  it("tracks active locks and removes them on cleanupActiveLocks", async () => {
+    let capturedLockPath: string | undefined;
+    await withFileLock(lockPath, async () => {
+      expect(activeLocks.has(lockPath)).toBe(true);
+      capturedLockPath = lockPath;
+      cleanupActiveLocks();
+      expect(await exists(lockPath)).toBe(false);
+      expect(activeLocks.size).toBe(0);
+    });
+    expect(activeLocks.has(lockPath)).toBe(false);
+  });
+
+  it("cleanupActiveLocks leaves a lock owned by another process intact", async () => {
+    await fs.writeFile(lockPath, "another-token");
+    activeLocks.set(lockPath, "our-token");
+
+    cleanupActiveLocks();
+
+    expect(await fs.readFile(lockPath, "utf-8")).toBe("another-token");
+    expect(activeLocks.size).toBe(0);
   });
 });

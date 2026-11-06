@@ -7,6 +7,7 @@ WORKDIR /app
 
 RUN --mount=type=cache,target=/root/.npm npm install
 
+<<<<<<< HEAD
 RUN --mount=type=cache,target=/root/.npm-production npm ci --ignore-scripts --omit-dev
 
 FROM node:24-alpine AS release
@@ -20,5 +21,9 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 RUN npm ci --ignore-scripts --omit-dev
+
+# Both transports close cleanly on SIGINT; node running as PID 1 would ignore
+# SIGINT without an explicit handler.
+STOPSIGNAL SIGINT
 
 ENTRYPOINT ["node", "dist/index.js"]
